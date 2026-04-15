@@ -3,9 +3,10 @@ import random
 import asyncio
 import time
 import os
+import aiohttp
 
 TOKEN = os.getenv("TOKEN")
-CHANNEL_ID = 123456789012345678  # replace with your channel id
+CHANNEL_ID = 1493910285629784154  # replace with your channel id
 
 intents = discord.Intents.default()
 intents.members = True
@@ -13,6 +14,7 @@ intents.members = True
 client = discord.Client(intents=intents)
 
 sent_timestamps = []
+recent_txids = []
 
 # emojis
 FAST = "<a:25801:1493897362672713768>"
@@ -25,32 +27,57 @@ LOCK = "<:lockeddd:1493903007488675910>"
 PROFILE = "<:profile:1488441547187027972>"
 CHECK = "<:greentick:1488449073475354725>"
 
-cryptos = [
-    ("BTC", BTC, 60000),
-    ("LTC", LTC, 80),
-    ("ETH", ETH, 3000),
-    ("USDT", USDT, 1)
-]
-
-def generate_txid():
-    return ''.join(random.choices('abcdef0123456789', k=64))
-
-def generate_amount(price):
-    usd = round(random.uniform(2, 100), 2)
-    crypto = round(usd / price, 8)
-    return usd, crypto
-
+# prevent spam (max 3 per min)
 def can_send():
     global sent_timestamps
     now = time.time()
     sent_timestamps = [t for t in sent_timestamps if now - t < 60]
     return len(sent_timestamps) < 3
 
+# get random real user
 async def get_random_user(guild):
     members = [m for m in guild.members if not m.bot]
     if not members:
         return "Anonymous User"
     return random.choice(members).name
+
+# fetch REAL LTC transactions
+async def get_real_transaction():
+    url = "https://api.blockcypher.com/v1/ltc/main"
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            data = await resp.json()
+
+            txs = data.get("unconfirmed_txrefs", [])
+
+            if not txs:
+                return None
+
+            tx = random.choice(txs)
+
+            txid = tx.get("tx_hash")
+
+            # avoid duplicates
+            if txid in recent_txids:
+                return None
+
+            value_ltc = tx.get("value", 0) / 1e8
+
+            usd = round(value_ltc * random.uniform(70, 90), 2)
+
+            # store recent txids
+            recent_txids.append(txid)
+            if len(recent_txids) > 20:
+                recent_txids.pop(0)
+
+            return {
+                "crypto": "LTC",
+                "emoji": LTC,
+                "amount_crypto": round(value_ltc, 6),
+                "amount_usd": usd,
+                "txid": txid
+            }
 
 @client.event
 async def on_ready():
@@ -60,15 +87,22 @@ async def on_ready():
     guild = channel.guild
 
     while True:
-        wait_time = random.randint(60, 7200)
+        wait_time = random.randint(60, 7200)  # 1 min → 2 hrs
         await asyncio.sleep(wait_time)
 
         if not can_send():
             continue
 
-        crypto_name, crypto_emoji, price = random.choice(cryptos)
-        usd, crypto_amt = generate_amount(price)
-        txid = generate_txid()
+        tx_data = await get_real_transaction()
+
+        if not tx_data:
+            continue
+
+        crypto_name = tx_data["crypto"]
+        crypto_emoji = tx_data["emoji"]
+        crypto_amt = tx_data["amount_crypto"]
+        usd = tx_data["amount_usd"]
+        txid = tx_data["txid"]
 
         # 10% real users
         if random.random() < 0.1:
@@ -107,12 +141,13 @@ async def on_ready():
             inline=False
         )
 
-        embed.set_footer(text=f"{FAST} Exon MM • Secure Transaction")
+        embed.set_footer(text=f"{FAST} Exon MM • Live Blockchain Data")
 
+        # real blockchain link
         view = discord.ui.View()
         view.add_item(discord.ui.Button(
             label="View on Blockchain",
-            url=f"https://blockchair.com/search?q={txid}"
+            url=f"https://live.blockcypher.com/ltc/tx/{txid}"
         ))
 
         await channel.send(embed=embed, view=view)
