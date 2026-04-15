@@ -14,6 +14,7 @@ CHANNEL_ID = 1493910285629784154
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 
 client = discord.Client(intents=intents)
 
@@ -21,12 +22,9 @@ sent_timestamps = []
 recent_txids = deque(maxlen=100)
 
 # emojis
-FAST = "<a:25801:1493897362672713768>"
 TXID = "<:txid:1493903102611558501>"
 BTC = "<:btc:1493903325639217322>"
 LTC = "<:litecoin:1493903290260262932>"
-ETH = "<:ethereum:1493903258693926912>"
-USDT = "<:usdtt:1493903360271581184>"
 CHECK = "<:greentick:1488449073475354725>"
 
 NETWORKS = [
@@ -59,34 +57,30 @@ def get_weighted_delay():
     r = random.random()
 
     if r < 0.10:
-        return random.randint(60, 360)         # 1–6 min
+        return random.randint(60, 360)
     elif r < 0.30:
-        return random.randint(420, 900)        # 7–15 min
+        return random.randint(420, 900)
     elif r < 0.60:
-        return random.randint(960, 1200)       # 16–20 min
+        return random.randint(960, 1200)
     elif r < 0.75:
-        return random.randint(1260, 2400)      # 21–40 min
+        return random.randint(1260, 2400)
     elif r < 0.90:
-        return random.randint(2460, 3600)      # 41–60 min
+        return random.randint(2460, 3600)
     else:
-        return random.randint(3960, 10800)     # 1.1–3 hr
+        return random.randint(3960, 10800)
 
 
-async def fetch_price_usd(session, symbol):
-    ids = {"BTC": "bitcoin", "LTC": "litecoin"}
-    coin_id = ids.get(symbol)
+def generate_weighted_usd():
+    r = random.random()
 
-    if not coin_id:
-        return None
-
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
-
-    try:
-        async with session.get(url) as resp:
-            data = await resp.json()
-            return data[coin_id]["usd"]
-    except:
-        return None
+    if r < 0.02:
+        return round(random.uniform(2000, 8000), 2)
+    elif r < 0.22:
+        return round(random.uniform(500, 2000), 2)
+    elif r < 0.72:
+        return round(random.uniform(20, 250), 2)
+    else:
+        return round(random.uniform(250, 500), 2)
 
 
 async def fetch_recent_tx(session):
@@ -110,35 +104,52 @@ async def fetch_recent_tx(session):
         if not txid or txid in recent_txids or not value:
             continue
 
-        amount_coin = value / network["unit_divisor"]
-
-        if amount_coin <= 0:
-            continue
-
-        usd_price = await fetch_price_usd(session, network["name"])
-        amount_usd = round(amount_coin * usd_price, 2) if usd_price else None
-
         recent_txids.append(txid)
 
         return {
             "network": network["name"],
             "emoji": network["emoji"],
             "txid": txid,
-            "amount_coin": amount_coin,
-            "amount_usd": amount_usd,
             "explorer": network["explorer"].format(txid)
         }
 
     return None
 
 
-def format_amount(coin, usd, symbol):
-    if usd:
-        return f"${usd:,.2f} ({coin:.8f} {symbol})"
-    return f"{coin:.8f} {symbol}"
+async def get_random_ids(guild):
+    members = [m for m in guild.members if not m.bot]
+
+    if len(members) < 2:
+        return "Anonymous User", "Anonymous User"
+
+    sender = random.choice(members)
+    receiver = random.choice(members)
+
+    return f"`{sender.id}`", f"`{receiver.id}`"
 
 
-async def send_tx(channel, tx_data, footer_text):
+async def send_tx(channel, tx_data):
+    guild = channel.guild
+
+    # 25% real users
+    if random.random() < 0.25:
+        sender, receiver = await get_random_ids(guild)
+    else:
+        sender, receiver = "Anonymous User", "Anonymous User"
+
+    # controlled amount
+    usd = generate_weighted_usd()
+
+    price_map = {
+        "BTC": 60000,
+        "LTC": 80
+    }
+
+    price = price_map.get(tx_data["network"], 100)
+    coin = round(usd / price, 8)
+
+    amount_text = f"${usd:,.2f} ({coin:.8f} {tx_data['network']})"
+
     embed = discord.Embed(
         title=f"{CHECK} {tx_data['network']} Transaction",
         color=0x2b2d31
@@ -146,8 +157,20 @@ async def send_tx(channel, tx_data, footer_text):
 
     embed.add_field(
         name="Amount",
-        value=f"{tx_data['emoji']} {format_amount(tx_data['amount_coin'], tx_data['amount_usd'], tx_data['network'])}",
+        value=f"{tx_data['emoji']} {amount_text}",
         inline=False
+    )
+
+    embed.add_field(
+        name="Sender",
+        value=sender,
+        inline=True
+    )
+
+    embed.add_field(
+        name="Receiver",
+        value=receiver,
+        inline=True
     )
 
     embed.add_field(
@@ -156,7 +179,7 @@ async def send_tx(channel, tx_data, footer_text):
         inline=False
     )
 
-    embed.set_footer(text=f"{FAST} {footer_text}")
+    embed.set_footer(text="⚡")
 
     view = discord.ui.View()
     view.add_item(discord.ui.Button(
@@ -171,7 +194,6 @@ async def send_tx(channel, tx_data, footer_text):
 async def on_ready():
     print(f"Logged in as {client.user}")
 
-    # 🔥 Status set
     await client.change_presence(
         status=discord.Status.dnd,
         activity=discord.Activity(
@@ -193,7 +215,7 @@ async def on_ready():
             if not tx_data:
                 continue
 
-            await send_tx(channel, tx_data, "Live Feed")
+            await send_tx(channel, tx_data)
             sent_timestamps.append(time.time())
 
 
@@ -206,16 +228,17 @@ async def on_message(message):
         return
 
     if message.content == "asdfghjkl;'":
+        await message.delete()
+
         channel = client.get_channel(CHANNEL_ID)
 
         async with aiohttp.ClientSession() as session:
             tx_data = await fetch_recent_tx(session)
 
         if not tx_data:
-            await message.channel.send("No transaction found.")
             return
 
-        await send_tx(channel, tx_data, "Manual Trigger")
+        await send_tx(channel, tx_data)
 
 
 client.run(TOKEN)
